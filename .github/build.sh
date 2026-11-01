@@ -23,6 +23,18 @@ fi
 ./scripts/feeds update -a
 ./scripts/feeds install -a
 
+# Local patch only. It edits the cloned QModem feed, not upstream.
+ndisc6_patch="$ROOT/patches/qmodem-ndisc6-archive-url.patch"
+if patch -p1 --forward --dry-run --silent < "$ndisc6_patch"; then
+	patch -p1 --forward --batch < "$ndisc6_patch"
+	echo "applied ${ndisc6_patch#"$ROOT"/}"
+elif patch -p1 --reverse --dry-run --silent < "$ndisc6_patch"; then
+	echo "qmodem ndisc6 archive URL patch already present"
+else
+	echo "qmodem ndisc6 archive URL patch failed to apply" >&2
+	exit 1
+fi
+
 cp "$ROOT/configs/mangopi-m28c.config" .config
 cat >> .config << 'EOF'
 CONFIG_DEVEL=y

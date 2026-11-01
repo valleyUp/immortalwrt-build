@@ -1,0 +1,17 @@
+Temporary local fix. QModem main still points ndisc6 1.0.2 at
+http://www.remlab.net/files/ndisc6, which now returns 410.
+The same tarball remains at the archive URL and keeps MD5
+50cb4c19606cf6ff2b7388e71832f579. Delete this patch when upstream
+ships a working PKG_SOURCE_URL.
+
+--- a/feeds/qmodem/application/ndisc6/Makefile
++++ b/feeds/qmodem/application/ndisc6/Makefile
+@@ -12,7 +12,7 @@
+ PKG_RELEASE:=1
+ 
+ PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
+-PKG_SOURCE_URL:=http://www.remlab.net/files/ndisc6
++PKG_SOURCE_URL:=https://www.remlab.net/files/ndisc6/archive
+ PKG_MD5SUM:=50cb4c19606cf6ff2b7388e71832f579
+ 
+ PKG_INSTALL:=1
