@@ -1,0 +1,151 @@
+name: Build MangoPi M28C
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: ImmortalWrt ref. Leave empty to use the latest master.
+        required: false
+        default: ""
+        type: string
+      release:
+        description: Publish a GitHub Release
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout build repository
+        uses: actions/checkout@v7
+
+      - name: Free disk space
+        run: |
+          set -eux
+          sudo docker image prune -af || true
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /opt/hostedtoolcache \
+            /opt/hostedtoolcache/CodeQL
+          df -h
+
+      - name: Install host dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -eux
+          sudo apt-get update
+          packages=(
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison
+            build-essential bzip2 ccache clang cmake cpio curl
+            device-tree-compiler flex gawk gettext gcc-multilib g++-multilib
+            genisoimage git gnutls-dev gperf haveged help2man intltool
+            lib32gcc-s1 libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev
+            libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev
+            libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm
+            lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf python3
+            python3-pip python3-ply python3-docutils python3-pyelftools
+            qemu-utils re2c rsync scons squashfs-tools subversion swig
+            texinfo uglifyjs unzip wget xmlto xxd zlib1g-dev zstd
+          )
+          install=()
+          for pkg in "${packages[@]}"; do
+            if apt-get install -s "$pkg" >/dev/null 2>&1; then
+              install+=("$pkg")
+            else
+              echo "skip unavailable package: $pkg"
+            fi
+          done
+          if [ "${#install[@]}" -eq 0 ]; then
+            echo "no host packages could be selected" >&2
+            exit 1
+          fi
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${install[@]}"
+
+      - name: Clone ImmortalWrt
+        env:
+          UPSTREAM_REF: ${{ github.event.inputs.upstream_ref }}
+        run: |
+          set -eux
+          git clone --depth 1 -b master https://github.com/immortalwrt/immortalwrt.git openwrt
+          if [ -n "$UPSTREAM_REF" ]; then
+            git -C openwrt fetch --depth 1 origin "$UPSTREAM_REF"
+            git -C openwrt checkout FETCH_HEAD
+          fi
+          git -C openwrt rev-parse HEAD
+          git -C openwrt status --short
+
+      - name: Restore download cache
+        uses: actions/cache@v6
+        with:
+          path: openwrt/dl
+          key: dl-${{ github.run_id }}
+          restore-keys: |
+            dl-
+
+      - name: Build firmware
+        env:
+          APK_PRIVATE_KEY: ${{ secrets.APK_PRIVATE_KEY }}
+          APK_PUBLIC_KEY: ${{ secrets.APK_PUBLIC_KEY }}
+        run: .github/build.sh
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-logs-${{ github.run_id }}
+          path: openwrt/logs
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Upload firmware
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mangopi-m28c-${{ github.run_id }}
+          path: firmware/*
+          retention-days: 3
+
+      - name: Publish release
+        if: success() && (github.event_name == 'push' || github.event.inputs.release == 'true')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="build-$(TZ=Asia/Shanghai date +%Y%m%d-%H%M)-${GITHUB_RUN_ID}"
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" --clobber firmware/*
+          else
+            gh release create "$tag" \
+              --title "MangoPi M28C ${tag}" \
+              --notes-file release-notes.txt \
+              firmware/*
+          fi
+          gh release list --limit 100 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("build-"))] | sort_by(.createdAt) | reverse | .[10:] | .[].tagName' \
+            > /tmp/old-releases.txt
+          if [ -s /tmp/old-releases.txt ]; then
+            while IFS= read -r old_tag; do
+              [ -n "$old_tag" ] || continue
+              gh release delete "$old_tag" --yes --cleanup-tag
+            done < /tmp/old-releases.txt
+          fi
